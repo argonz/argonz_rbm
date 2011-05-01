@@ -11,19 +11,7 @@ classdef rbmdbno
         % rdo=rdo.add_layer(20,'Guz',50,'BB',{'eta',0.005,'sprt',0.1});
         % rdo=rdo.add_layer_n(2,50,'BB',50,'BB',{'eta',0.1,'sprt',0.1});
         % rdo=rdo.cd1trains(xs); 
-        
-        % rdo=rbmdbno({20,'Guz',50,'BB',{'eta',0.005,'sprt',0.1}}, ...
-        %             {50,'BB',50,'BB',{sprt',0.1}}, ...
-        %             {50,'BB',50,'BB',{sprt',0.1}}};
-        
-% $$$         rdo=rbmdbno()
-% $$$         rdo=rdo.add_layer(16,'Guz',50,'BB',{'eta',0.005,'sprt',0.1,'pretrainc',50,'trainc',100});
-% $$$         rdo=rdo.add_layer_n(2,50,'BB',50,'BB',{'eta',0.1,'sprt',0.1,'pretrainc',50,'trainc',100})
-        
-% $$$         {16,'Guz',50,'BB',{'eta',0.005,'sprt',0.1}}, ...
-        %             {50,'BB',50,'BB',{sprt',0.1}}, ...
-        %             {50,'BB',50,'BB',{sprt',0.1}}};
-        
+         
     end
     methods
         function o=rbmdbno()
@@ -46,7 +34,7 @@ classdef rbmdbno
                o.rlos{i}=rlo;
            end
        end
-       function ps=prob_repr_nth(o,xs,n)
+       function ps=prob_repr_nth(o,n,xs)
            for i=1:length(o.rlos)
                rlo=o.rlos{i};
                xs=rlo.hidden_probs(xs);

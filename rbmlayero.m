@@ -1,7 +1,7 @@
 % rbm layer object
-% here and there based on Salakhutdinov's original implementation
+% based on Salakhutdinov's implementation
 % do whatever you want with it licenc
-% Mate Toth : argonzulu@gmail.com
+% Mate Toth, argonzulu@gmail.com
 
 
 classdef rbmlayero
@@ -16,21 +16,45 @@ classdef rbmlayero
         htov;
         
         % learning parameters
-        eta;                            % learning rate
+        etadecq;                        % using eta decay?
+        eta0;                           % starting eta parameter
+        etap;                           % eta decay parameter: eta_new = eta_old * etap;
+        etam;                           % minimum eta threshold - stop the algorithm
+        etai;                           % eta check frequency (check energy still improve)
+        
+        eta;                            % learning rate (when using fixed iteration)
         mom;                            % learning momentum
+        
+        % statistics - for measurement
+        etahist;                        % eta values history
+        trehist;                        % free energies on training set
+        vaehist;                        % on validation set
+        trrhist;                        % reconstruction error on training set
+        varhist;                        % on validation set
 
-        wdec;                           % weight decay - for exploding weights - [0.001, 0.00001]
-        sprp;                           % sparsity penalty factor - [0.1, 0.9]
-        sprt;                           % sparsity target - [0.01, 0.1]
-        sprl;                           % sparsity lambda (updated factor) - [0.9, 0.99]
+
+        % weight threshold, penalty
+        wdet;                           % weight decay - threshold - [0.8]
+        wdep;                           % weight decay - penalty - [0.1, 0.001]
        
+        % sparsity target, penalty, lambda
+        sprt;                           % sparsity target - [0.01, 0.1]
+        sprp;                           % sparsity penalty factor - [0.1, 0.9]
+        sprl;                           % sparsity lambda (updated factor) - [0.9, 0.99]
+              
         % batch
         batchsize;
-        validsize;                      % validation set for free energy
+        
+        % validation set parameters
+        validsetq;                      % use validation set for monitoring energy
+        detervalq;                      % use non random sample as validation set (for measurement)
+        validsize;                      % size of the validation set for free energy
+        
         
         % overfitting related
-        pretrainc;                      % number of epochs with eta
-        trainc;                         % number of epochs with lowering eta
+        fixediterq                      % using fixed iteration
+        iter                            % number of fixed iteration
+        
         
         % verbosity
         verbose;                        % print out free energies and changes
@@ -54,17 +78,24 @@ classdef rbmlayero
     methods        
         function o=rbmlayero(nvis,typvis,nhid,typhid,opta)
             o.w=(rand(nvis,nhid)/100) .* sign(rand(nvis,nhid)-0.5);
-            o.a=(rand(1,nvis)/100 .* sign(rand(1,nvis)-0.5));
-            o.b=(rand(1,nhid)/100 .* sign(rand(1,nhid)-0.5));
+            o.a= -rand(1,nvis)/100;     % because the minus bias, they are tend to start off
+            o.b= -rand(1,nhid)/100;
 
             
-            % parameters                - should be experimenting and changed!     
-            o.eta=0.1;
+            % parameters                - should be experimenting with and changed!     
+            o.eta0=0.2;
+            o.etam=0.002;
+            o.etap=0.8;
+                            
             o.mom=0.5;
             o.batchsize=10;
+            
+            o.validsetq=false;
             o.validsize=100;            % should be arount 1/20 of the data? :O
             
-            o.wdec=0.00001;             % values from the manual :)            
+            o.wdet=0.8;
+            o.wdep=0.1;             % values from the manual :)    
+            
             o.sprt=0.04;                % should be between 0.01 - 0.1
             o.sprp=0.4;                 % sparsity penalty cos
             o.sprl=0.95;                % sparsity lambda - tracking activity statistics
@@ -80,7 +111,7 @@ classdef rbmlayero
                 o.htov=@logistic_state;
             elseif strcmp(typvis,'Gzu')
                 o.htov=@gaussian_state;
-                o.eta=0.005;
+                o.eta=0.02;
             end
  
             % hidden side
@@ -88,19 +119,21 @@ classdef rbmlayero
                 o.vtoh=@logistic_state;
             elseif strcmp(typhid,'Gzu')
                 o.vtoh=@gaussian_state;
-                o.eta=0.005;
+                o.eta=0.02;
             end
            
             % supplied parameters
             if exist('opta')
                 i=1;
-                while i<length(opta)
+                while i<=length(opta)
                     if strcmp(opta{i},'eta')
                         o.eta=opta{i+1};
-                    elseif strcmp(opta{i},'momentum')
+                    elseif strcmp(opta{i},'mom')
                         o.mom=opta{i+1};
                     elseif strcmp(opta{i},'batchsize')
                         o.batchsize=opta{i+1};
+                    elseif strcmp(opta{i},'validsetq')
+                        o.validsetq=opta{i+1};
                     elseif strcmp(opta{i},'validsize')
                         o.validsize=opta{i+1};
                     elseif strcmp(opta{i},'sprl')
@@ -124,16 +157,32 @@ classdef rbmlayero
             
         end
          
-        function [vxs,vtxs,txs]=exclude_validset(o,xs)
+% random validation set - vxs: validation - txs: training - cxs: compare from training
+        function [vxs,txs,cxs]=exclude_rand_validset(o,xs)
             is=1:size(xs,1);
             vis=randsample(is,o.validsize);
             tis=setdiff(is,vis);
-            vtis=randsample(tis,o.validsize);
+            cis=randsample(tis,o.validsize);
+            
+            vxs=xs(vis,:);
+            cxs=xs(cis,:);
+            txs=xs(vtis,:);
+        end
+        function [vxs,txs,cxs]=exclude_freq_validset(o,xs)  
+            len=size(xs,1)
+            is=1:len;
+            vis=1:floor(len/o.validsize):len;
+            tis=setdiff(is,vis);
+            
+            len=size(tis,1)
+            cis=vis(1:floor(len/o.validsize):len,:);
             
             vxs=xs(vis,:);
             txs=xs(tis,:);
-            vtxs=xs(vtis,:);
+            cxs=xs(cis,:);
         end
+        
+% batches for training
         function [bxa]=training_batches(o,xs)
             cis=crossvalind('Kfold',size(xs,1),o.batchsize);
             uis=unique(cis);
@@ -144,6 +193,8 @@ classdef rbmlayero
             end
         end
 
+       
+% monitoring
         function [e]=free_energy(o,xs,w,a,b)
         % the easy equation from hinton's practical guide expr(24)
         % http://www.cs.toronto.edu/~hinton/absps/guideTR.pdf
@@ -154,24 +205,61 @@ classdef rbmlayero
             hs=xs*w + repmat(b,numcases,1);         
             e= (-sum(sum(ea)) - sum(sum(log(1+exp(hs))))) / numcases;
         end
-        function [ev,et,dev,det]=free_energies(o,vxs,txs,ev0,et0,w,a,b)
+        function [e,de]=free_energy_diff(o,xs,e0,w,a,b)
+            e=o.free_energy(xs,w,a,b);
+            de=e0-e;
+        end
+        function [ev,et]=free_energies(o,vxs,txs,w,a,b)
             ev=o.free_energy(vxs,w,a,b);
             et=o.free_energy(txs,w,a,b);
-            dev=ev-ev0;
-            det=et-et0;
-        end
+        end  
         function [e]=reconstruction_error(o,v0s,w,a,b)
             [h0s,h0ps]=o.vtoh(v0s,w,b);
             [v1s,v1ps]=o.htov(h0ps,w',a);
-            e=sum(sum(abs((v0s-v1ps).^2)));
+            e=sum(sum(abs((v0s-v1ps).^2)))/prod(size(v0s));
         end
+            
+        function []=print_energy_state(o,e,re)
+            display(sprintf('eta:%f  -  energy: %f  -  recerror: %f',o.eta,e,re));
+        end
+        function []=print_val_trn_energy_state(o,vale,valre,trne,trnre)
+            display(sprintf('eta:%f  -  ve: %f / te: %f  -  vre: %f / tre: %f',o.eta,vale,trne,valre,trnre));
+        end
+        
+        function [de,e,re]=monitor_energy_state(o,xs,w,a,b,e0,i)
+        % monitor
+            e=o.free_energy(xs,e0,w,a,b);
+            re=o.reconstruction_error(xs,w,a,b);
+            de=e-e0;
+            if o.verbose
+                o.print_energy_state(i,e,re);
+            end
+        end            
+        function [vde,ve,vre,tde,te,tre]=monitor_val_trn_energy_state(o,vxs,txs,w,a,b,ve0,te0,i)
+                   
+            ve=o.free_energy(vxs,e0,w,a,b);
+            vre=o.reconstruction_error(vxs,w,a,b);
+            vde=ve-ve0;
+                
+            te=o.free_energy(txs,e0,w,a,b);
+            tre=o.reconstruction_error(txs,w,a,b);
+            tde=te-te0;
+                
+            if o.verbose
+                o.print_val_trn_energy_state(i,ve,vre,te,tre);
+            end
+        end
+        
+        
+% learning
         function [dw]=weight_penalty(o,w)
-            wp=(sum(w.^2,1))*(-1*0.5*o.wdec*o.eta);    % LEARNING RATE INCLUDED!!!
-            dw=repmat(wp,size(w,1),1);
+            dw=((w-o.wdet).^2) * (o.wdep*-1*o.eta);     % WRONG COMPUTATIONALLY INEFFICIENT         
+%             wp=(sum(w.^2,1))*(-1*0.5*o.wdep*o.eta);    % LEARNING RATE INCLUDED!!!
+%             dw=repmat(wp,size(w,1),1);
         end        
         function [dw,db,qs]=sparsity_penalty(o,w,b,hs,qs)
             qs=qs*o.sprl + hs*(1-o.sprl);
-            ps=(o.sprt-qs)*o.sprp;
+            ps=(o.sprt-qs)*(o.sprp*o.eta);             % LEARNING RATE INCLUDED!!!
 
             dw=repmat(ps,size(w,1),1);
             db=ps;
@@ -187,7 +275,7 @@ classdef rbmlayero
             %go up down up
             [h0s,h0ps]=o.vtoh(v0s,w,b);
             [v1s,v1ps]=o.htov(h0s,w',a);
-            [h1s,h1ps]=o.vtoh(v1s,w,b);   
+            [h1s,h1ps]=o.vtoh(v1ps,w,b);   
 
             %the learning signal;  
             dw=(v0s'*h0ps - v1s'*h1ps)/numcases; 
@@ -205,8 +293,9 @@ classdef rbmlayero
 % $$$             db_spen=((1+abs(b))/2).*db_spen;                                      
 % $$$             dw_wpen=((1+abs(w))/2).*dw_wpen;              % weight high penalties
             
-            dw=dw+dw_wpen+dw_spen;
-            db=db+db_spen;           
+%              dw=dw+dw_wpen+dw_spen;
+             dw=dw+dw_spen;
+             db=db+db_spen;           
         end       
         function [w,a,b,dw,da,db,qs]=cd1train_batch(o,xs,w,a,b,dw0,da0,db0,qs)
             [dw,da,db,qs]=o.cd1(xs,w,a,b,qs);
@@ -220,35 +309,94 @@ classdef rbmlayero
                 [w,a,b,dw,da,db,qs]=o.cd1train_batch(bxa{i},w,a,b,dw0,da0,db0,qs);
             end
         end
-        function [o]=cd1train(o,xs)
-            [vxs,vtxs,txs]=o.exclude_validset(xs);
+        function [w,a,b,dw,da,db,qs]=cd1train_allbatches_ntimes(o,n,xs,w,a,b,dw0,da0,db0,qs)
+            for i=1:n
+                bxa=o.training_batches(txs);    % new batches set every time - don't know is it worth it
+                [w,a,b,dw,da,db,qs]=cd1train_allbatches(bxa,w,a,b,dw0,da0,db0,qs);
+            end
+        end
+        
+        function ar=save_train_state(o,w,a,b,dw0,da0,db0,qs)
+            ar={w,a,b,dw0,da0,db0,qs};
+        end
+        function [w,a,b,dw0,da0,db0,qs]=load_train_state(o,ar)
+            w=ar{1};
+            a=ar{2};
+            b=ar{3};
+            dw0=ar{4};
+            da0=ar{5};
+            db0=ar{6};
+            qs=ar{7};
+        end
+        function [dw0,da0,db0]=decay_train_state(o,dw0,da0,db0,p)
+            dw0=dw0*p;
+            da0=da0*p;
+            db0=db0*p;
+        end
+        function [w,a,b,dw,da,db,qs]=cd1train_till_energy_improve(o,xs,w,a,b,dw0,da0,db0,qs)
+            ar=o.save_train_state(w,a,b,dw0,da0,db0,qs);
+            [de,e,re]=monitor_energy_state(o,xs,w,a,b,e0);
+            
+            [w,a,b,dw,da,db,qs]=o.cd1train_allbatches_ntimes(o.etai,xs,w,a,b,dw0,da0,db0,qs);
+            o.cd1train_allbatches_ntimes
+            
+        end
+       
+       function [o]=cd1train(o,xs)
+            
+            % if use validset and random sampling
+            if o.validsetq && ~detervalq; [vxs,txs,cxs]=o.exclude_validset(xs); end
+            if o.validsetq && detervalq; [vxs,txs,cxs]=o.exclude_validset(xs); end
+            
+            % parameters 
             w=o.w;
             a=o.a;
             b=o.b;
             dw0=0;
             db0=0;
             da0=0;
-            qs=zeros(1,size(w,2));
+           
+            qs=zeros(1,size(w,2));       
+            
+            % different kind of trainings
+            if ~o.validsetq             
+                o.eta=o.eta0;
+                [de,e,re]=monitor_energy_state(o,xs,w,a,b,e0,i);
+                                
+                while o.eta>o.etam;
+                    i=0;
+                    dev=1;
+                    
+                    [w,a,b,dw,da,db,qs]=o.cd1train_allbatches_ntimes(o.etai,xs,w,a,b,dw0,da0,db0,qs);
+                    [de,e,re]=monitor_energy_state(o,xs,w,a,b,e0,i);
+                    
+                    [ev,dev]=o.free_energy_diff(xs,0,w,a,b);
+                    er=o.reconstruction_error(xs,w,a,b);
+                    o.print_energy_state(i,ev,er);
+
+                end
+            else
+                
+            end
 
             
             % pre training with maximum eta
             [ev,et,dev,det]=o.free_energies(vxs,vtxs,0,0,w,a,b);
-            for c=1:o.pretrainc
+            for c=0:o.pretrainc
                 bxa=o.training_batches(txs);    % new batches set every time - don't know is it worth it
                 [w,a,b,dw,da,db,qs]=o.cd1train_allbatches(bxa,w,a,b,dw0,da0,db0,qs);
 
                 % status report
-                if o.verbose && mod(c,20)==0                    
+                if o.verbose && mod(c,modp)==0                    
                     % energy changes
                     [ev,et,dev,det]=o.free_energies(vxs,vtxs,ev,et,w,a,b);
-                    er=o.reconstruction_error(vxs,w,a,b);
-% $$$                     display(sprintf('pretrain: %d :: free energies  valid:%f  -  train:%f',c,ev,et));
-                    display(sprintf('pretrain: %d :: free energies  valid:%f - train:%f  :: err: %f',c,ev,et,er));
-                end
-                
-  
+                    evr=o.reconstruction_error(vxs,w,a,b);
+                    etr=o.reconstruction_error(vtxs,w,a,b);
+                    display(sprintf('pretrain: %d :: free energies  v:%f - t:%f :: recons err  v:%f - t:%f',c,ev,et,evr,etr));
+                end                 
             end
-            
+   
+
             % training with decaying eta and a slight overfit watch
             c=0;
             while c<o.trainc      % || (mdet/mdev)<1.25          % overfit criteria - not working, bogus
@@ -257,17 +405,20 @@ classdef rbmlayero
                 [w,a,b,dw,da,db,qs]=o.cd1train_allbatches(bxa,w,a,b,dw0,da0,db0,qs);
 
                 % status report
-                if o.verbose && mod(c,20)==0                    
+                if o.verbose && mod(c,modp)==0                    
                     % energy derivatives
                     [ev,et,dev,det]=o.free_energies(vxs,vtxs,ev,et,w,a,b);
-                    er=o.reconstruction_error(vxs,w,a,b);
-% $$$                     display(sprintf('train: %d :: free energies  valid:%f  -  train:%f',c,ev,et));
-                    display(sprintf('train: %d :: free energies  valid:%f - train:%f  :: err: %f',c,ev,et,er));
+                    evr=o.reconstruction_error(vxs,w,a,b);
+                    etr=o.reconstruction_error(vtxs,w,a,b);
+                    display(sprintf('train: %d :: free energies  v:%f - t:%f :: recons err  v:%f - t:%f',c,ev,et,evr,etr));
                 end
 
                 o.eta=o.eta*(o.trainc/(o.trainc-c))*((o.trainc-c-1)/o.trainc);  
-                c=c+1;              
-            end
+                c=c+1;                              
+            end 
+            
+            % print activity 
+            display(sprintf('activity statistics   mean: %f  sd: %f',mean(qs),std(qs)));
 
             % set the final parameters (slightly overfit ones)  
             o.w=w;
@@ -281,6 +432,11 @@ classdef rbmlayero
         end
         function ss=hidden_states(o,xs)
             [ss,ps]=o.vtoh(xs,o.w,o.b);
+        end
+        
+        function v1ps=reconstruction_probs(o,xs)
+            [h0s,h0ps]=o.vtoh(xs,o.w,o.b);
+            [v1s,v1ps]=o.htov(h0ps,o.w',o.a);
         end
             
     end
